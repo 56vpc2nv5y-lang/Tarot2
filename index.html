@@ -1,0 +1,1388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>Mystic Tarot | 神秘塔罗</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=Noto+Serif+SC:wght@300;400&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --card-width: clamp(105px, 17vw, 180px);
+            --card-height: calc(var(--card-width) * 1.75);
+            --bg: #03030c;
+            --gold: #c9a84c;
+            --gold-lt: #e8d08a;
+            --gold-dim: rgba(201,168,76,0.45);
+            --gold-glow: rgba(201,168,76,0.18);
+            --ink: #09091e;
+            --text: #ddd6c8;
+            --text-dim: #6e6a60;
+            --text-mid: #a89f90;
+            --accent: #7b5ea7;
+        }
+        @media (max-width: 768px) and (orientation: portrait) { :root { --card-width: clamp(80px, 22vw, 135px); } }
+        @media (orientation: landscape) and (max-height: 520px) { :root { --card-width: clamp(82px, 22vh, 125px); } }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            width: 100%; height: 100%; overflow: hidden;
+            background: var(--bg);
+            font-family: 'Noto Serif SC', Georgia, serif;
+            color: var(--text);
+            user-select: none;
+            touch-action: none;
+        }
+
+        /* ══════════════════════════════
+           BACKGROUND LAYERS
+        ══════════════════════════════ */
+        #bg-canvas {
+            position: fixed; inset: 0; z-index: 0;
+            pointer-events: none;
+        }
+
+        /* Vignette */
+        #vignette {
+            position: fixed; inset: 0; z-index: 1; pointer-events: none;
+            background: radial-gradient(ellipse 80% 80% at 50% 50%,
+                transparent 40%,
+                rgba(3,3,12,0.5) 70%,
+                rgba(3,3,12,0.9) 100%);
+        }
+
+        /* Bottom fog */
+        #fog {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            height: 38%; z-index: 2; pointer-events: none;
+            background: linear-gradient(to top, rgba(3,3,12,0.97) 0%, rgba(3,3,12,0.6) 40%, transparent 100%);
+        }
+
+        /* ══════════════════════════════
+           LOADER
+        ══════════════════════════════ */
+        #loader {
+            position: fixed; inset: 0; z-index: 3000;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+            background: var(--bg); transition: opacity 0.6s;
+        }
+        #loader.hidden { opacity: 0; pointer-events: none; }
+        .loader-glyph {
+            font-size: 2rem; color: var(--gold-dim);
+            animation: loaderPulse 2s ease-in-out infinite;
+        }
+        @keyframes loaderPulse { 0%,100%{opacity:.3;transform:scale(.9)} 50%{opacity:1;transform:scale(1)} }
+        .loader-name {
+            font-family: 'Cinzel', serif; font-size: 0.85rem;
+            letter-spacing: 6px; color: var(--gold-dim); text-transform: uppercase;
+        }
+        #loader-track {
+            width: min(240px,70vw); height: 2px;
+            background: rgba(255,255,255,0.07); border-radius: 999px; overflow: hidden;
+        }
+        #loader-bar {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, var(--gold-dim), var(--gold-lt));
+            transition: width 0.2s linear;
+        }
+        #loader-pct { font-size: 0.72rem; color: var(--text-dim); letter-spacing: 2px; }
+
+        /* ══════════════════════════════
+           GAME CONTAINER & SCENE
+        ══════════════════════════════ */
+        #game-wrap {
+            position: fixed; inset: 0; z-index: 10;
+            perspective: 1600px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #scene {
+            width: 100%; height: 56vh; position: relative;
+            transform-style: preserve-3d;
+            display: flex; justify-content: center; align-items: center;
+        }
+
+        /* Center selection zone ring — visual guide */
+        #center-ring {
+            position: absolute;
+            width: calc(var(--card-width) * 1.3);
+            height: calc(var(--card-height) * 1.3);
+            border-radius: 16px;
+            border: 1px solid rgba(201,168,76,0.12);
+            pointer-events: none;
+            z-index: 5;
+            transition: border-color 0.3s, box-shadow 0.3s;
+            display: none;
+        }
+        #center-ring.active {
+            border-color: rgba(201,168,76,0.55);
+            box-shadow: 0 0 30px rgba(201,168,76,0.15), inset 0 0 30px rgba(201,168,76,0.06);
+        }
+        #center-ring.charging {
+            border-color: rgba(255,255,255,0.7);
+            box-shadow: 0 0 50px rgba(255,255,255,0.25), inset 0 0 40px rgba(255,255,255,0.1);
+        }
+
+        /* ══════════════════════════════
+           CARDS
+        ══════════════════════════════ */
+        .card-wrapper {
+            position: absolute;
+            width: var(--card-width); height: var(--card-height);
+            transform-style: preserve-3d;
+            transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            cursor: pointer; border-radius: 13px;
+        }
+        .card-inner {
+            width: 100%; height: 100%; position: relative;
+            transform-style: preserve-3d;
+            transition: transform 0.9s cubic-bezier(0.4,0,0.2,1);
+            border-radius: 13px;
+        }
+        .card-wrapper.flipped .card-inner { transform: rotateY(180deg); }
+        .card-face {
+            position: absolute; width: 100%; height: 100%;
+            backface-visibility: hidden; border-radius: 13px;
+            overflow: hidden;
+        }
+        /* Card back */
+        .card-back {
+            background: #0c0c20;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.8), 0 0 0 1px rgba(201,168,76,0.15);
+        }
+        .card-back-face {
+            position: absolute; inset: 0;
+            background:
+                repeating-linear-gradient(45deg,
+                    rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 1px,
+                    transparent 1px, transparent 8px),
+                repeating-linear-gradient(-45deg,
+                    rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 1px,
+                    transparent 1px, transparent 8px);
+        }
+        .card-back-border {
+            position: absolute;
+            inset: 8px; border: 1px solid rgba(201,168,76,0.2); border-radius: 6px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .card-back-sym {
+            font-size: 1.6rem; color: rgba(201,168,76,0.25);
+            text-shadow: 0 0 16px rgba(201,168,76,0.2);
+        }
+        /* Card front */
+        .card-front {
+            background: #f5eedf;
+            transform: rotateY(180deg);
+            background-size: cover; background-position: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.8), 0 0 0 1px rgba(201,168,76,0.2);
+        }
+
+        /* Center card ambient glow */
+        .card-wrapper.center-glow::after {
+            content: '';
+            position: absolute; inset: -20px;
+            border-radius: 24px;
+            background: radial-gradient(ellipse, rgba(201,168,76,0.12) 0%, transparent 70%);
+            z-index: -1; pointer-events: none;
+        }
+
+        /* ══════════════════════════════
+           UI OVERLAY
+        ══════════════════════════════ */
+        #ui {
+            position: fixed; inset: 0; z-index: 20;
+            pointer-events: none;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            grid-template-columns: 1fr;
+            padding: 0;
+        }
+
+        /* ── Header ── */
+        #header {
+            padding: 22px 20px 0;
+            display: flex; flex-direction: column; align-items: center; gap: 0;
+        }
+
+        /* Decorative top line */
+        .deco-line {
+            display: flex; align-items: center; gap: 10px;
+            width: min(340px, 80vw); margin-bottom: 10px;
+        }
+        .deco-line::before, .deco-line::after {
+            content: ''; flex: 1; height: 1px;
+            background: linear-gradient(to right, transparent, rgba(201,168,76,0.25), transparent);
+        }
+        .deco-diamond { font-size: 0.5rem; color: var(--gold-dim); }
+
+        .site-title {
+            font-family: 'Cinzel Decorative', serif;
+            font-size: clamp(1.1rem, 2.8vw, 1.7rem);
+            font-weight: 400; letter-spacing: 4px;
+            color: var(--gold);
+            text-shadow:
+                0 0 20px rgba(201,168,76,0.35),
+                0 0 60px rgba(201,168,76,0.1);
+            line-height: 1;
+        }
+        .site-subtitle {
+            font-family: 'Cinzel', serif;
+            font-size: 0.6rem; letter-spacing: 8px;
+            color: var(--text-dim); margin-top: 4px;
+            text-transform: uppercase;
+        }
+
+        /* Status area */
+        #status-area {
+            margin-top: 14px;
+            display: flex; flex-direction: column; align-items: center; gap: 8px;
+        }
+        #status-text {
+            font-size: 0.82rem; color: var(--text-mid);
+            letter-spacing: 1.5px; min-height: 1.2em;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8);
+            transition: opacity 0.4s;
+        }
+
+        /* Charge indicator */
+        #charge-wrap { display: none; flex-direction: column; align-items: center; gap: 5px; }
+        #charge-label { font-size: 0.65rem; color: var(--gold-dim); letter-spacing: 3px; }
+        #charge-track {
+            width: 120px; height: 2px;
+            background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden;
+            box-shadow: 0 0 8px rgba(255,255,255,0.05);
+        }
+        #charge-bar {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, var(--gold-dim), var(--gold-lt));
+            transition: width 0.08s linear;
+            box-shadow: 0 0 6px var(--gold);
+        }
+
+        /* Gesture chips */
+        #g-hints {
+            display: none;
+            gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center;
+            pointer-events: none;
+        }
+        .g-chip {
+            display: flex; align-items: center; gap: 5px;
+            background: rgba(9,9,30,0.75);
+            border: 1px solid rgba(201,168,76,0.15);
+            border-radius: 16px; padding: 4px 11px;
+            font-size: 0.68rem; color: rgba(201,168,76,0.55);
+            letter-spacing: 0.8px; backdrop-filter: blur(6px);
+        }
+
+        /* ── Middle (empty, used for picked zone positioning) ── */
+        #middle { position: relative; }
+
+        /* ── Picked zone ── */
+        #picked-zone {
+            position: absolute;
+            bottom: 20px; left: 50%; transform: translateX(-50%);
+            display: none; gap: 12px;
+            z-index: 50; pointer-events: none;
+        }
+        .p-slot {
+            display: flex; flex-direction: column; align-items: center; gap: 6px;
+        }
+        .p-slot-box {
+            width: calc(var(--card-width) * 0.44);
+            height: calc(var(--card-height) * 0.44);
+            border-radius: 8px;
+            border: 1px dashed rgba(201,168,76,0.2);
+            background: rgba(0,0,0,0.2);
+            display: flex; align-items: center; justify-content: center;
+            transition: border-color 0.4s, background 0.4s, box-shadow 0.4s;
+        }
+        .p-slot-box.filled {
+            border-style: solid;
+            border-color: rgba(201,168,76,0.5);
+            background: rgba(0,0,0,0.45);
+            box-shadow: 0 0 16px rgba(201,168,76,0.12);
+        }
+        .p-slot-num {
+            font-size: 0.6rem; color: var(--text-dim);
+            letter-spacing: 1px;
+        }
+        .mini-card {
+            width: 100%; height: 100%; border-radius: 7px;
+            background-size: cover; background-position: center;
+            display: flex; align-items: center; justify-content: center;
+            animation: miniIn 0.5s cubic-bezier(0.22,1,0.36,1);
+        }
+        @keyframes miniIn {
+            from { transform: translateY(-200px) scale(1.3) rotate(-8deg); opacity: 0; }
+            to   { transform: none; opacity: 1; }
+        }
+
+        /* ── Footer ── */
+        #footer {
+            padding: 0 20px 20px;
+            display: flex; flex-direction: column; align-items: center; gap: 10px;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            font-family: 'Cinzel', serif;
+            border-radius: 24px; cursor: pointer; pointer-events: auto;
+            transition: all 0.25s; letter-spacing: 2px; border: 1px solid var(--gold);
+            background: rgba(9,9,30,0.8); color: var(--gold);
+            padding: 10px 30px; font-size: 0.82rem;
+            backdrop-filter: blur(8px);
+        }
+        .btn:hover { background: var(--gold); color: var(--ink); box-shadow: 0 0 24px var(--gold-glow); }
+        .btn-ghost { border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.3); background: transparent; }
+        .btn-ghost:hover { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.55); box-shadow: none; }
+        .btn-solid { background: var(--gold); color: var(--ink); font-weight: 600; box-shadow: 0 0 20px var(--gold-glow); }
+        .btn-solid:hover { box-shadow: 0 0 36px rgba(201,168,76,0.55); }
+
+        /* ── Spinner ── */
+        .spinner {
+            width: 24px; height: 24px; border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.08);
+            border-left-color: var(--gold);
+            animation: spin .8s linear infinite; display: none;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Revealed card position labels ── */
+        .pos-label {
+            position: absolute; bottom: -28px; width: 100%; text-align: center;
+            font-size: 0.72rem; color: var(--gold-dim); letter-spacing: 3px;
+        }
+
+        /* ══════════════════════════════
+           SETTINGS GEAR
+        ══════════════════════════════ */
+        #settings-btn {
+            position: fixed; top: 16px; right: 16px; z-index: 200;
+            width: 36px; height: 36px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(9,9,30,0.65); border: 1px solid transparent;
+            color: var(--gold-dim); cursor: pointer;
+            transition: transform 0.45s, border-color 0.25s, color 0.25s, background 0.25s;
+            pointer-events: auto;
+        }
+        #settings-btn:hover { transform: rotate(90deg); border-color: var(--gold-dim); color: var(--gold); background: rgba(201,168,76,0.08); }
+
+        /* ══════════════════════════════
+           HAND CURSOR
+        ══════════════════════════════ */
+        #hand-cursor {
+            position: fixed; pointer-events: none; z-index: 1000;
+            transform: translate(-50%,-50%); display: none;
+        }
+        .hc-dot {
+            width: 12px; height: 12px; border-radius: 50%;
+            background: rgba(201,168,76,0.6);
+            box-shadow: 0 0 12px var(--gold), 0 0 24px rgba(201,168,76,0.3);
+        }
+        .cursor-trail {
+            position: fixed; width: 6px; height: 6px; border-radius: 50%;
+            pointer-events: none; z-index: 999; opacity: 0;
+            animation: trailFade 0.5s ease-out forwards;
+        }
+        @keyframes trailFade { 0%{opacity:.7;transform:scale(1)} 100%{opacity:0;transform:scale(.2)} }
+
+        /* Particles */
+        .particle {
+            position: fixed; border-radius: 50%; pointer-events: none; z-index: 2001;
+            animation: ptcl 0.9s ease-out forwards;
+        }
+        @keyframes ptcl {
+            0%  { opacity:1; transform:translate(-50%,-50%) scale(1); }
+            100%{ opacity:0; transform:translate(-50%,-180px) scale(0); }
+        }
+
+        /* ══════════════════════════════
+           MODALS
+        ══════════════════════════════ */
+        .backdrop {
+            position: fixed; inset: 0; z-index: 600;
+            background: rgba(3,3,12,0.82); backdrop-filter: blur(12px);
+            display: none; align-items: center; justify-content: center;
+            padding: 16px;
+        }
+        .backdrop.open { display: flex; }
+        .mbox {
+            background: #07071a;
+            border: 1px solid rgba(201,168,76,0.3);
+            border-radius: 20px; padding: 32px 28px;
+            width: min(580px,96vw); max-height: 92vh; overflow-y: auto;
+            box-shadow:
+                0 0 0 1px rgba(255,255,255,0.04),
+                0 20px 80px rgba(0,0,0,0.8),
+                0 0 40px rgba(201,168,76,0.04);
+            animation: mboxIn 0.38s cubic-bezier(0.22,1,0.36,1);
+        }
+        @keyframes mboxIn { from{opacity:0;transform:translateY(16px) scale(.96)} to{opacity:1;transform:none} }
+
+        /* Modal typography */
+        .m-title {
+            font-family: 'Cinzel', serif; color: var(--gold);
+            font-size: 1rem; letter-spacing: 4px; margin-bottom: 8px;
+        }
+        .m-sub { font-size: 0.8rem; color: var(--text-dim); line-height: 1.7; margin-bottom: 20px; }
+        .m-label { font-size: 0.7rem; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 8px; }
+        .m-divider { height: 1px; background: rgba(255,255,255,0.06); margin: 18px 0; }
+        .m-row { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; flex-wrap: wrap; }
+
+        /* Tone buttons */
+        .tone-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 20px; }
+        .tone-card {
+            padding: 12px 8px; border-radius: 12px; cursor: pointer;
+            border: 1px solid rgba(201,168,76,0.15);
+            background: rgba(255,255,255,0.02);
+            text-align: center; transition: all 0.2s; pointer-events: auto;
+        }
+        .tone-card:hover { border-color: rgba(201,168,76,0.4); background: rgba(201,168,76,0.04); }
+        .tone-card.active { border-color: var(--gold); background: rgba(201,168,76,0.1); }
+        .tone-icon { font-size: 1.3rem; display: block; margin-bottom: 4px; }
+        .tone-name { font-size: 0.78rem; color: var(--text-mid); letter-spacing: 0.5px; }
+        .tone-desc { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; line-height: 1.4; }
+        .tone-card.active .tone-name { color: var(--gold); }
+
+        /* Textarea */
+        .q-box {
+            width: 100%; padding: 13px 16px; min-height: 85px; resize: none;
+            background: rgba(255,255,255,0.03); border: 1px solid rgba(201,168,76,0.15);
+            color: var(--text); font-family: 'Noto Serif SC', serif; font-size: 0.92rem;
+            border-radius: 12px; outline: none; line-height: 1.7;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .q-box::placeholder { color: rgba(255,255,255,0.17); }
+        .q-box:focus { border-color: rgba(201,168,76,0.45); box-shadow: 0 0 16px rgba(201,168,76,0.08); }
+
+        /* ── Reading modal ── */
+        #reading-modal .mbox { max-width: 800px; padding: 26px 26px 22px; }
+
+        /* Card strip in reading modal */
+        #r-cards {
+            display: flex; gap: 16px; justify-content: center;
+            padding-bottom: 20px; border-bottom: 1px solid rgba(201,168,76,0.1);
+            margin-bottom: 22px; flex-wrap: wrap; align-items: flex-end;
+        }
+        .r-card-item { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+        .r-card-img {
+            width: clamp(58px,8vw,80px);
+            height: calc(clamp(58px,8vw,80px) * 1.75);
+            border-radius: 8px; background-size: cover; background-position: center;
+            border: 1px solid rgba(201,168,76,0.25);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+            transition: transform 0.3s;
+        }
+        .r-card-img:hover { transform: scale(1.05); }
+        .r-card-img.rev { transform: rotate(180deg); }
+        .r-card-img.rev:hover { transform: rotate(180deg) scale(1.05); }
+        .r-card-pos { font-size: 0.62rem; color: var(--gold-dim); letter-spacing: 2px; }
+        .r-card-name { font-size: 0.62rem; color: var(--text-dim); max-width: 72px; text-align: center; line-height: 1.3; }
+        #r-question-tag {
+            width: 100%; text-align: center; font-size: 0.75rem;
+            color: var(--gold-dim); font-style: italic;
+            margin-bottom: 14px; padding: 7px 14px;
+            background: rgba(201,168,76,0.05);
+            border-radius: 8px; border: 1px solid rgba(201,168,76,0.1);
+            display: none;
+        }
+
+        /* Reading content */
+        #r-content {
+            font-size: 0.97rem; line-height: 1.9; color: var(--text);
+            min-height: 50px;
+        }
+        #r-content h3 {
+            font-family: 'Cinzel', serif; font-size: 0.88rem;
+            color: var(--gold); letter-spacing: 2px;
+            margin: 22px 0 10px; padding-bottom: 8px;
+            border-bottom: 1px solid rgba(201,168,76,0.1);
+        }
+        #r-content h4 { font-size: 0.9rem; color: #c0aa7c; margin: 14px 0 6px; }
+        #r-content p { margin-bottom: 10px; }
+        #r-content ul, #r-content ol { padding-left: 18px; margin-bottom: 10px; }
+        #r-content li { margin-bottom: 5px; }
+        #r-content blockquote {
+            border-left: 2px solid rgba(201,168,76,0.4); padding: 8px 16px;
+            color: var(--text-mid); font-style: italic;
+            background: rgba(201,168,76,0.04); border-radius: 0 8px 8px 0; margin: 14px 0;
+        }
+        #r-content strong { color: #dbc97a; }
+        #r-content hr { border: none; border-top: 1px solid rgba(201,168,76,0.1); margin: 18px 0; }
+
+        /* Follow-up */
+        #followup { display: none; margin-top: 22px; }
+        .fu-label { font-size: 0.7rem; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 12px; }
+        #chat-log { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; max-height: 260px; overflow-y: auto; }
+        .chat-u {
+            align-self: flex-end; max-width: 82%;
+            background: rgba(201,168,76,0.08); border: 1px solid rgba(201,168,76,0.18);
+            border-radius: 14px 14px 4px 14px; padding: 9px 14px;
+            font-size: 0.86rem; color: var(--text);
+        }
+        .chat-a {
+            align-self: flex-start; max-width: 94%;
+            background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 4px 14px 14px 14px; padding: 9px 14px;
+            font-size: 0.86rem; color: var(--text); line-height: 1.75;
+        }
+        .fu-row { display: flex; gap: 8px; }
+        #fu-input {
+            flex: 1; padding: 9px 14px;
+            background: rgba(255,255,255,0.03); border: 1px solid rgba(201,168,76,0.15);
+            color: var(--text); font-family: 'Noto Serif SC', serif; font-size: 0.86rem;
+            border-radius: 10px; outline: none;
+            transition: border-color 0.2s;
+        }
+        #fu-input::placeholder { color: rgba(255,255,255,0.18); }
+        #fu-input:focus { border-color: rgba(201,168,76,0.45); }
+        #fu-send { padding: 9px 16px; border-radius: 10px; font-size: 0.82rem; white-space: nowrap; }
+
+        #r-footer {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 18px; flex-wrap: wrap; gap: 8px;
+        }
+        #r-note { font-size: 0.7rem; color: var(--text-dim); }
+
+        /* Settings modal */
+        #settings-modal .mbox { max-width: 400px; text-align: center; }
+        #settings-modal input {
+            width: 100%; padding: 11px 14px; margin: 12px 0;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(201,168,76,0.2);
+            color: var(--text); border-radius: 10px; font-size: 0.9rem;
+            outline: none; transition: border-color 0.2s;
+        }
+        #settings-modal input:focus { border-color: rgba(201,168,76,0.55); }
+        #settings-modal a { color: var(--gold); text-decoration: none; }
+        #settings-modal a:hover { text-decoration: underline; }
+
+        /* Webcam preview */
+        #webcam {
+            position: fixed; bottom: 16px; right: 16px;
+            width: 130px; height: 98px;
+            border: 1px solid rgba(201,168,76,0.2);
+            opacity: 0.4; border-radius: 8px;
+            transform: scaleX(-1); z-index: 100;
+            transition: opacity 0.3s;
+        }
+        #webcam:hover { opacity: 0.7; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(201,168,76,0.18); border-radius: 3px; }
+
+        /* Animations */
+        @keyframes pulseRing {
+            0%  { transform: translate(-50%,-50%) scale(.3); opacity:1; }
+            100%{ transform: translate(-50%,-50%) scale(2); opacity:0; }
+        }
+        @keyframes revealCard {
+            from { opacity:0; transform: translateY(30px) scale(.95); }
+            to   { opacity:1; transform: none; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Background -->
+<canvas id="bg-canvas"></canvas>
+<div id="vignette"></div>
+<div id="fog"></div>
+
+<!-- Loader -->
+<div id="loader">
+    <div class="loader-glyph">✦</div>
+    <div class="loader-name">神秘塔罗</div>
+    <div id="loader-track"><div id="loader-bar"></div></div>
+    <div id="loader-pct">0%</div>
+    <button id="loader-retry" class="btn" style="display:none;margin-top:6px;font-size:.75rem">重试</button>
+</div>
+
+<!-- Settings gear -->
+<div id="settings-btn" title="配置 API Key">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+        <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+    </svg>
+</div>
+
+<!-- Hand cursor -->
+<div id="hand-cursor"><div class="hc-dot"></div></div>
+
+<!-- Main UI -->
+<div id="ui">
+    <div id="header">
+        <div class="deco-line"><div class="deco-diamond">◆</div></div>
+        <div class="site-title">神秘塔罗</div>
+        <div class="site-subtitle">Mystic Tarot</div>
+        <div id="status-area">
+            <div id="status-text">正在启动…</div>
+            <div id="charge-wrap">
+                <div id="charge-label">蓄力中…</div>
+                <div id="charge-track"><div id="charge-bar"></div></div>
+            </div>
+            <div id="g-hints">
+                <div class="g-chip">✋ 张开手掌 选牌</div>
+                <div class="g-chip">✊ 握拳 1s 开始/解读</div>
+                <div class="g-chip">◀▶ 手移边缘 滚动</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="middle">
+        <!-- Picked slots -->
+        <div id="picked-zone">
+            <div class="p-slot" id="pslot-0">
+                <div class="p-slot-box" id="slot-0"></div>
+                <div class="p-slot-num">过去</div>
+            </div>
+            <div class="p-slot" id="pslot-1">
+                <div class="p-slot-box" id="slot-1"></div>
+                <div class="p-slot-num">现在</div>
+            </div>
+            <div class="p-slot" id="pslot-2">
+                <div class="p-slot-box" id="slot-2"></div>
+                <div class="p-slot-num">未来</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="footer">
+        <button id="start-btn" class="btn" style="display:none">开 始 体 验</button>
+        <div class="spinner" id="spinner"></div>
+    </div>
+</div>
+
+<!-- Game -->
+<div id="game-wrap">
+    <div id="scene">
+        <div id="center-ring"></div>
+    </div>
+</div>
+
+<video id="webcam" playsinline></video>
+
+<!-- ══ Question Modal ══ -->
+<div class="backdrop" id="q-modal">
+    <div class="mbox">
+        <div class="m-title">你在寻求什么指引？</div>
+        <div class="m-sub">写下让你困惑的处境，解读会更有针对性。<br>也可以直接跳过，进行通用解读。</div>
+
+        <div class="m-label">解读风格</div>
+        <div class="tone-grid">
+            <div class="tone-card active" data-tone="balanced">
+                <span class="tone-icon">⚖️</span>
+                <div class="tone-name">平衡解读</div>
+                <div class="tone-desc">象征与实用兼顾，温暖有洞察</div>
+            </div>
+            <div class="tone-card" data-tone="practical">
+                <span class="tone-icon">🎯</span>
+                <div class="tone-name">务实分析</div>
+                <div class="tone-desc">直接说人话，给具体可操作建议</div>
+            </div>
+            <div class="tone-card" data-tone="poetic">
+                <span class="tone-icon">🌙</span>
+                <div class="tone-name">深度探索</div>
+                <div class="tone-desc">触及内在模式，引导自我反思</div>
+            </div>
+        </div>
+
+        <div class="m-label">你的问题（可选）</div>
+        <textarea class="q-box" id="user-q" placeholder="例如：我和伴侣最近总是冷战，不知道是否应该主动修复还是先给彼此空间？&#10;工作上有个重要机会，但我很没安全感，不敢去争取…"></textarea>
+
+        <div class="m-row">
+            <button class="btn btn-ghost" id="q-skip">跳过，通用解读</button>
+            <button class="btn btn-solid" id="q-confirm">开启解读 🔮</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ Reading Modal ══ -->
+<div class="backdrop" id="reading-modal">
+    <div class="mbox">
+        <div id="r-cards"></div>
+        <div id="r-question-tag"></div>
+        <div id="r-content"></div>
+
+        <div id="followup">
+            <div class="m-divider"></div>
+            <div class="fu-label">✦ 继续追问</div>
+            <div id="chat-log"></div>
+            <div class="fu-row">
+                <input id="fu-input" type="text" placeholder="针对解读继续追问…" maxlength="200">
+                <button class="btn" id="fu-send">发送</button>
+            </div>
+        </div>
+
+        <div id="r-footer">
+            <div id="r-note"></div>
+            <button class="btn btn-ghost" id="r-close" style="font-size:.75rem;padding:7px 16px">关 闭</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ Settings Modal ══ -->
+<div class="backdrop" id="settings-modal">
+    <div class="mbox" style="text-align:center">
+        <div class="m-title">API Key 配置</div>
+        <div class="m-sub" style="margin-bottom:0">
+            输入 DeepSeek API Key 开启 AI 解读。<br>
+            Key 仅存储于您的浏览器本地。<br>
+            <a href="https://platform.deepseek.com/api_keys" target="_blank">→ 前往 DeepSeek 获取 Key</a>
+        </div>
+        <input type="password" id="key-input" placeholder="sk-…">
+        <div style="display:flex;gap:10px;justify-content:center">
+            <button class="btn btn-solid" id="key-save">保 存</button>
+            <button class="btn btn-ghost" id="key-close">关 闭</button>
+        </div>
+    </div>
+</div>
+
+<script>
+'use strict';
+
+// ════════════════════════════════════════
+//  CARD DATA
+// ════════════════════════════════════════
+const ASSETS_PATH = 'assets/tarot/pkt/';
+const FULL_DECK = (() => {
+    const cards = [];
+    ['The Fool','The Magician','The High Priestess','The Empress','The Emperor','The Hierophant','The Lovers','The Chariot','Strength','The Hermit','Wheel of Fortune','Justice','The Hanged Man','Death','Temperance','The Devil','The Tower','The Star','The Moon','The Sun','Judgement','The World']
+        .forEach((name,i) => { const id=`ar${String(i).padStart(2,'0')}`; cards.push({id,name,type:'major',img:`${ASSETS_PATH}${id}.jpg`}); });
+    [{code:'wa',name:'Wands'},{code:'cu',name:'Cups'},{code:'sw',name:'Swords'},{code:'pe',name:'Pentacles'}].forEach(s =>
+        [{code:'ac',name:'Ace'},{code:'02',name:'Two'},{code:'03',name:'Three'},{code:'04',name:'Four'},{code:'05',name:'Five'},{code:'06',name:'Six'},{code:'07',name:'Seven'},{code:'08',name:'Eight'},{code:'09',name:'Nine'},{code:'10',name:'Ten'},{code:'pa',name:'Page'},{code:'kn',name:'Knight'},{code:'qu',name:'Queen'},{code:'ki',name:'King'}]
+        .forEach(r => { const id=`${s.code}${r.code}`; cards.push({id,name:`${r.name} of ${s.name}`,type:'minor',img:`${ASSETS_PATH}${id}.jpg`}); })
+    );
+    return cards;
+})();
+
+let currentDeck=[], pickedCards=[], cardEls=[];
+let assetsReady=false, assetsFailed=false, cameraReady=false, cameraError=false;
+
+// ════════════════════════════════════════
+//  BACKGROUND CANVAS — Stars + Aurora
+// ════════════════════════════════════════
+function initBackground() {
+    const cv = document.getElementById('bg-canvas');
+    const ctx = cv.getContext('2d');
+    let W, H, stars=[], auroraT=0;
+
+    function resize() {
+        W = cv.width  = window.innerWidth;
+        H = cv.height = window.innerHeight;
+        stars = Array.from({length:220}, () => ({
+            x: Math.random()*W, y: Math.random()*H,
+            r: Math.random()*1.4+.1, o: Math.random()*.8+.1,
+            s: Math.random()*.35+.05, tw: Math.random()*200+80
+        }));
+    }
+
+    function drawAurora(t) {
+        // Subtle aurora bands
+        for (let i=0; i<3; i++) {
+            const x = W*(0.2 + i*0.3);
+            const y = H*(0.15 + Math.sin(t*.0004+i)*0.08);
+            const grad = ctx.createRadialGradient(x, y, 0, x, y, W*0.35);
+            const hues = [260, 200, 280];
+            grad.addColorStop(0, `hsla(${hues[i]},60%,35%,${.06+Math.sin(t*.0003+i)*0.03})`);
+            grad.addColorStop(1, 'transparent');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, W, H);
+        }
+    }
+
+    function draw(t) {
+        ctx.clearRect(0,0,W,H);
+        ctx.fillStyle = '#03030c';
+        ctx.fillRect(0,0,W,H);
+
+        drawAurora(t);
+
+        stars.forEach(s => {
+            const flicker = 0.5 + 0.5*Math.sin(t/s.tw);
+            ctx.globalAlpha = s.o * flicker;
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.28); ctx.fill();
+            s.y -= s.s; if (s.y < 0) s.y = H;
+        });
+        ctx.globalAlpha = 1;
+        requestAnimationFrame(draw);
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+    requestAnimationFrame(draw);
+}
+
+// ════════════════════════════════════════
+//  ASSET LOADING
+// ════════════════════════════════════════
+function setLP(p, label) {
+    const b = document.getElementById('loader-bar');
+    const t = document.getElementById('loader-pct');
+    if (b) b.style.width = Math.round(p)+'%';
+    if (t) t.innerText = (label?label+' ':'')+Math.round(p)+'%';
+}
+
+function preloadAssets() {
+    const loader = document.getElementById('loader');
+    const retry  = document.getElementById('loader-retry');
+    if (retry) retry.style.display='none';
+    setLP(0);
+
+    const imgs = Array.from(new Set(FULL_DECK.map(c=>c.img)));
+    const total = imgs.length;
+    if (!total) { assetsReady=true; loader.classList.add('hidden'); updateIdle(); return; }
+
+    let done=0, fail=0;
+    imgs.forEach(src => {
+        const i=new Image();
+        const ok  = () => { done++; setLP((done+fail)/total*100); if(done+fail===total) finish(); };
+        const bad = () => { fail++; setLP((done+fail)/total*100); if(done+fail===total) finish(); };
+        i.onload=ok; i.onerror=bad; i.src=src;
+    });
+
+    function finish() {
+        if (fail>0) {
+            assetsFailed=true; setLP(100,'加载失败');
+            if(retry){ retry.style.display='inline-block'; retry.onclick=preloadAssets; }
+        } else {
+            assetsReady=true; setLP(100,'完成');
+            setTimeout(()=>{ loader.classList.add('hidden'); updateIdle(); }, 400);
+        }
+    }
+}
+
+function updateIdle() {
+    if (currentState!==STATE.IDLE || cameraError) return;
+    const s = $('status-text');
+    if (assetsFailed) { s.innerText='资源加载失败'; return; }
+    if (!assetsReady) { s.innerText='资源加载中…'; return; }
+    s.innerText = cameraReady ? '握拳 1 秒开始，或点击按钮' : '点击按钮开始体验';
+    $('start-btn').style.display='inline-block';
+}
+
+const $ = id => document.getElementById(id);
+
+// ════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════
+const STATE = {IDLE:'IDLE',INTRO:'INTRO',PICKING:'PICKING',REVEALING:'REVEALING',INTERPRETING:'INTERPRETING'};
+let currentState=STATE.IDLE, currentIndex=0, velocity=0, targetIndex=0;
+
+// ════════════════════════════════════════
+//  SCENE
+// ════════════════════════════════════════
+const scene = $('scene');
+
+function mkCard(card, idx) {
+    const w=document.createElement('div'); w.className='card-wrapper'; w.dataset.index=idx;
+    const inner=document.createElement('div'); inner.className='card-inner';
+    const back=document.createElement('div'); back.className='card-face card-back';
+    const bf=document.createElement('div'); bf.className='card-back-face';
+    const bb=document.createElement('div'); bb.className='card-back-border';
+    const bs=document.createElement('div'); bs.className='card-back-sym'; bs.textContent='✦';
+    bb.appendChild(bs); back.appendChild(bf); back.appendChild(bb);
+    const front=document.createElement('div'); front.className='card-face card-front';
+    front.style.backgroundImage=`url('${card.img}')`;
+    inner.appendChild(back); inner.appendChild(front); w.appendChild(inner);
+    return w;
+}
+
+function renderDeck() {
+    // Keep center-ring
+    const ring = $('center-ring');
+    scene.innerHTML=''; scene.appendChild(ring);
+    cardEls=[];
+
+    if (currentState===STATE.PICKING || currentState===STATE.INTRO) {
+        currentDeck.forEach((card,i)=>{
+            const el=mkCard(card,i);
+            el.addEventListener('pointerup', ()=>handleClick(i));
+            scene.appendChild(el); cardEls.push(el);
+        });
+        ring.style.display='block';
+        updatePositions();
+    } else if (currentState===STATE.REVEALING || currentState===STATE.INTERPRETING) {
+        ring.style.display='none';
+        pickedCards.forEach((item,i)=>{
+            const el=mkCard(item.card,i); scene.appendChild(el); cardEls.push(el);
+        });
+        updateRevealed();
+    }
+}
+
+function updatePositions() {
+    if (currentState!==STATE.PICKING && currentState!==STATE.INTRO) return;
+    const W=window.innerWidth;
+    const cw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))||170;
+    const mob = W<=480;
+    const gap = Math.min(Math.max(cw*(mob?.82:1.08), W*(mob?.11:.16)), cw*(mob?1.18:1.85));
+    const sides = Math.ceil((W/2)/(gap*.5))+3;
+    const centerIdx = Math.round(currentIndex);
+
+    cardEls.forEach((card,i)=>{
+        if (card.classList.contains('picked')) return;
+        const dist=i-currentIndex;
+        if (Math.abs(dist)>sides) { card.style.display='none'; return; }
+        card.style.display='block';
+        const x=dist*gap;
+        const z=-Math.pow(Math.abs(dist),1.3)*42;
+        const ry=Math.max(-40,Math.min(40,dist*4.5));
+        let sc = Math.abs(dist)<.5 ? (mob?1.04:1.16)-Math.abs(dist)*(mob?.18:.34) : 1-Math.min(Math.abs(dist)*.08,.38);
+        card.style.zIndex = Math.abs(dist)<.5 ? 1000 : 1000-Math.floor(Math.abs(dist)*10);
+        // Center glow
+        if (i===centerIdx) card.classList.add('center-glow'); else card.classList.remove('center-glow');
+        if (isPalmHeld && chargeIdx===i) { sc*=chargeScale; card.style.zIndex=2000; }
+        card.style.transform=`translateX(${x}px) translateZ(${z}px) rotateY(${ry}deg) scale(${sc})`;
+    });
+
+    // Center ring state
+    const ring = $('center-ring');
+    if (isPalmHeld) ring.classList.add('charging');
+    else { ring.classList.remove('charging'); ring.classList.add('active'); }
+}
+
+function updateRevealed() {
+    const W=window.innerWidth;
+    const spread = W<=480 ? Math.min(W*.16,160) : Math.min(W*.27,360);
+    const xPos = [-spread, 0, spread];
+    const labels = ['过去','现在','未来'];
+    cardEls.forEach((card,i)=>{
+        card.style.transform=`translateX(${xPos[i]}px) scale(1.06)`;
+        card.style.zIndex=10;
+        if (i<pickedCards.length) {
+            const p=pickedCards[i];
+            setTimeout(()=>{
+                card.classList.add('flipped');
+                if (p.reversed) { const f=card.querySelector('.card-front'); if(f) f.style.transform='rotateX(180deg)'; }
+                card.style.animation='revealCard .5s ease-out';
+            }, i*520+400);
+        }
+        if (!card.querySelector('.pos-label')) {
+            const lbl=document.createElement('div');
+            lbl.className='pos-label'; lbl.textContent=labels[i];
+            card.appendChild(lbl);
+        }
+    });
+}
+
+// ════════════════════════════════════════
+//  GESTURE SYSTEM
+//  ✋ Palm (center, 1s hold) = SELECT CARD
+//  ✊ Fist (1s hold) = START / READING
+// ════════════════════════════════════════
+let lastHX=-1, lastHY=-1;
+let isPalmHeld=false, palmStart=0, chargeIdx=null, chargeScale=1;
+const SEL_TIME=1000;
+let isFistHeld=false, fistStart=0;
+const ACT_TIME=1000;
+let isDrag=false, didDrag=false, lastPX=0;
+const FRICTION=0.92;
+let lockedIdx=null;
+
+const gw=$('game-wrap');
+gw.addEventListener('pointerdown',e=>{ if(currentState!==STATE.PICKING) return; isDrag=true; didDrag=false; lastPX=e.clientX; });
+window.addEventListener('pointermove',e=>{
+    if (!isDrag||currentState!==STATE.PICKING) return;
+    const dx=e.clientX-lastPX;
+    if (Math.abs(dx)>3) didDrag=true;
+    velocity-=dx*.003; lastPX=e.clientX;
+});
+window.addEventListener('pointerup',()=>{ isDrag=false; });
+
+function handleClick(idx) {
+    if (currentState!==STATE.PICKING || didDrag) return;
+    const center=Math.round(currentIndex);
+    if (idx===center) { lockedIdx=idx; selectCard(); }
+    else { currentIndex=idx; velocity=0; }
+}
+
+function isFist(lm) { const w=lm[0]; return [8,12,16,20].reduce((s,i)=>s+Math.hypot(lm[i].x-w.x,lm[i].y-w.y),0)/4<.23; }
+function isPalm(lm) { const w=lm[0]; return [8,12,16,20].reduce((s,i)=>s+Math.hypot(lm[i].x-w.x,lm[i].y-w.y),0)/4>.4; }
+
+function spawnP(rect, n=3) {
+    const cx=rect.left+rect.width/2, cy=rect.top+rect.height/2;
+    for(let i=0;i<n;i++){
+        const p=document.createElement('div'); p.className='particle';
+        const sz=2+Math.random()*6;
+        const gold=Math.random()>.4;
+        Object.assign(p.style,{
+            width:sz+'px', height:sz+'px',
+            left:(cx+(Math.random()-.5)*rect.width*.85)+'px',
+            top:(cy+(Math.random()-.5)*rect.height*.85)+'px',
+            background:gold?'var(--gold)':'#fff',
+            boxShadow:`0 0 8px ${gold?'var(--gold)':'#fff'}`
+        });
+        document.body.appendChild(p); setTimeout(()=>p.remove(),900);
+    }
+}
+
+function handleGesture(lm) {
+    if (![STATE.IDLE,STATE.PICKING,STATE.INTERPRETING].includes(currentState)) return;
+    const x=lm[9].x, y=lm[9].y;
+    if (lastHX===-1) { lastHX=x; lastHY=y; return; }
+
+    const sx=(1-x)*window.innerWidth, sy=y*window.innerHeight;
+    const cur=$('hand-cursor');
+    cur.style.display='block'; cur.style.left=sx+'px'; cur.style.top=sy+'px';
+    if (Math.hypot(x-lastHX,y-lastHY)>.005) spawnTrail(sx,sy);
+
+    const cw=$('charge-wrap'), cb=$('charge-bar');
+
+    if (currentState===STATE.IDLE || currentState===STATE.INTERPRETING) {
+        if (isFist(lm)) {
+            if (!isFistHeld) {
+                isFistHeld=true; fistStart=Date.now();
+                cw.style.display='flex'; cb.style.width='0%';
+                $('charge-label').textContent='蓄力中…';
+            }
+            const p=Math.min((Date.now()-fistStart)/ACT_TIME,1.0);
+            cb.style.width=(p*100)+'%';
+            if (p>=1.0) {
+                isFistHeld=false; cw.style.display='none';
+                if (currentState===STATE.IDLE) startGame();
+                else showQModal();
+            }
+        } else {
+            if (isFistHeld) { isFistHeld=false; cw.style.display='none'; cb.style.width='0%'; }
+        }
+        lastHX=x; lastHY=y; return;
+    }
+
+    // Picking: zone scroll
+    const W=window.innerWidth;
+    if (sx<W*.32) velocity=-Math.min((W*.32-sx)/(W*.32),1)*.2;
+    else if (sx>W*.68) velocity=Math.min((sx-W*.68)/(W*.32),1)*.2;
+
+    // Palm center = select
+    const inC=sx>W*.3&&sx<W*.7;
+    if (isPalm(lm)&&inC) {
+        if (!isPalmHeld) {
+            isPalmHeld=true; palmStart=Date.now();
+            chargeIdx=Math.round(currentIndex); chargeScale=1;
+            cw.style.display='flex'; cb.style.width='0%';
+            $('charge-label').textContent='选牌中…';
+            $('center-ring').classList.add('charging');
+        }
+        const p=Math.min((Date.now()-palmStart)/SEL_TIME,1.0);
+        chargeScale=1+p*.14; cb.style.width=(p*100)+'%';
+        cardEls.forEach(el=>{
+            if (parseInt(el.dataset.index)===chargeIdx) {
+                el.style.boxShadow=`0 0 ${28+p*80}px rgba(255,255,255,${.65+p*.35})`;
+                el.style.filter=`brightness(${1+p*1.5})`; el.style.zIndex=2000;
+                if (Math.random()<.4) spawnP(el.getBoundingClientRect(),2);
+            } else { el.style.filter=''; el.style.boxShadow=''; }
+        });
+        if (p>=1.0) {
+            lockedIdx=chargeIdx;
+            selectCard();
+            isPalmHeld=false; palmStart=0; chargeIdx=null; chargeScale=1;
+            cw.style.display='none';
+            $('center-ring').classList.remove('charging');
+            // burst
+            const ring=document.createElement('div');
+            Object.assign(ring.style,{position:'fixed',left:sx+'px',top:sy+'px',width:'70px',height:'70px',border:'2px solid var(--gold)',borderRadius:'50%',transform:'translate(-50%,-50%)',animation:'pulseRing .5s ease-out',pointerEvents:'none',zIndex:9999});
+            document.body.appendChild(ring); setTimeout(()=>ring.remove(),500);
+        }
+    } else {
+        if (isPalmHeld) {
+            isPalmHeld=false; palmStart=0; chargeIdx=null; chargeScale=1;
+            cw.style.display='none';
+            $('center-ring').classList.remove('charging');
+            cardEls.forEach(el=>{ el.style.filter=''; el.style.boxShadow=''; });
+        }
+    }
+    lastHX=x; lastHY=y;
+}
+
+function spawnTrail(x,y) {
+    const t=document.createElement('div'); t.className='cursor-trail';
+    t.style.left=x+'px'; t.style.top=y+'px';
+    t.style.background=`hsla(${(Date.now()/12)%360},65%,62%,.65)`;
+    document.body.appendChild(t); setTimeout(()=>t.remove(),500);
+}
+
+// ════════════════════════════════════════
+//  GAME LOOP
+// ════════════════════════════════════════
+function gameLoop() {
+    if (currentState===STATE.INTRO) {
+        currentIndex+=(targetIndex-currentIndex)*.05;
+        if (Math.abs(targetIndex-currentIndex)<.1) {
+            currentIndex=targetIndex; currentState=STATE.PICKING;
+            setStatus('将手移到屏幕边缘滚动牌  ·  张开手掌选牌');
+            $('g-hints').style.display='flex';
+            $('picked-zone').style.display='flex';
+            $('center-ring').classList.add('active');
+        }
+        updatePositions();
+    }
+    if (currentState===STATE.PICKING && !isDrag) {
+        if (isPalmHeld&&chargeIdx!==null) { currentIndex=chargeIdx; velocity=0; }
+        else {
+            currentIndex+=velocity; velocity*=FRICTION;
+            if (Math.abs(velocity)<.0001) velocity=0;
+            if (currentIndex<0) { currentIndex=0; velocity*=-.5; }
+            if (currentIndex>currentDeck.length-1) { currentIndex=currentDeck.length-1; velocity*=-.5; }
+        }
+        updatePositions();
+    }
+    requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+
+function setStatus(t) { $('status-text').innerText=t; }
+
+function selectCard() {
+    if (currentState!==STATE.PICKING) return;
+    const idx=lockedIdx!==null?lockedIdx:Math.round(currentIndex);
+    lockedIdx=null;
+    if (idx<0||idx>=currentDeck.length) return;
+    const card=currentDeck[idx];
+    if (pickedCards.some(p=>p.card.id===card.id)) return;
+
+    cardEls.forEach(el=>{
+        if (parseInt(el.dataset.index)===idx) {
+            el.classList.add('picked'); el.style.opacity='0';
+            el.style.filter=''; el.style.boxShadow='';
+        }
+    });
+    pickedCards.push({ card, reversed:Math.random()<.3, position:['过去','现在','未来'][pickedCards.length] });
+    setStatus(`已选 ${pickedCards.length} / 3 张`);
+
+    const box=$(`slot-${pickedCards.length-1}`);
+    if (box) {
+        box.classList.add('filled');
+        const m=document.createElement('div'); m.className='mini-card';
+        m.innerHTML='<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:1.4rem;color:rgba(201,168,76,.35)">✦</div>';
+        box.appendChild(m);
+    }
+    if (pickedCards.length===3) setTimeout(finishPicking,900);
+}
+
+function finishPicking() {
+    currentState=STATE.REVEALING;
+    setStatus('命运已定…');
+    $('g-hints').style.display='none';
+    $('picked-zone').style.opacity='0';
+    renderDeck();
+    setTimeout(()=>{
+        currentState=STATE.INTERPRETING;
+        const token=localStorage.getItem('deepseek_token');
+        setStatus(token ? '握拳 1 秒 → 开启命运解读' : '配置 API Key 后可获取 AI 解读（右上角 ⚙）');
+    },2500);
+}
+
+// ════════════════════════════════════════
+//  QUESTION MODAL & TONE
+// ════════════════════════════════════════
+let selTone='balanced';
+document.querySelectorAll('.tone-card').forEach(b=>{
+    b.addEventListener('click',()=>{
+        document.querySelectorAll('.tone-card').forEach(c=>c.classList.remove('active'));
+        b.classList.add('active'); selTone=b.dataset.tone;
+    });
+});
+
+function showQModal() {
+    if (!localStorage.getItem('deepseek_token')) { $('settings-modal').classList.add('open'); return; }
+    $('q-modal').classList.add('open');
+    $('user-q').value='';
+    setTimeout(()=>$('user-q').focus(),300);
+}
+$('q-confirm').addEventListener('click',()=>{ $('q-modal').classList.remove('open'); startReading(); });
+$('q-skip').addEventListener('click',()=>{ $('user-q').value=''; $('q-modal').classList.remove('open'); startReading(); });
+
+// ════════════════════════════════════════
+//  AI READING
+// ════════════════════════════════════════
+let convHist=[];
+
+function sysPmt(tone) {
+    return {
+        balanced:`你是一位经验丰富的塔罗咨询师。你用塔罗的象征系统帮助来访者看清处境，然后给出实际的行动建议。说话温暖、坦诚、有洞察力。直接说"你现在面临的是……"，不堆砌玄幻词汇。适度使用塔罗意象，但核心是帮助对方想清楚问题。`,
+        practical:`你是一位理性直接的咨询顾问，用塔罗牌的框架来结构化分析问题。风格像聪明的朋友帮你分析处境——说人话，给建议，不绕弯子。指出真正的问题所在，给出最重要的1-2个具体行动。避免玄幻、诗意的表达。`,
+        poetic:`你是一位融合荣格心理学和塔罗象征的解读者。语言有一定诗意但不空洞——用意象触及来访者内心深处的感受，帮助他们看见自己的内在模式。提出有深度的问题引导自我反思，语言优美但每句都有实质。`
+    }[tone]||'你是一位经验丰富的塔罗咨询师，说话温暖、直接、有洞察力。';
+}
+
+function buildPmt(q,tone) {
+    const cards=pickedCards.map((p,i)=>`${['过去','现在','未来'][i]}：**${p.card.name}**（${p.reversed?'逆位':'正位'}）`).join('\n');
+    const qLine = q ? `来访者的问题：「${q}」` : `来访者没有具体问题，请综合解读三张牌呈现的整体处境与建议。`;
+    const fmt = {
+        balanced:`\n\n输出格式（Markdown）：\n### 🔮 整体处境\n（2-3句，概括三张牌的核心主题，语言直接）\n\n---\n\n### 牌面解析\n**过去 · ${pickedCards[0].card.name}**\n（30-50字，过去的影响或模式）\n\n**现在 · ${pickedCards[1].card.name}**\n（30-50字，当前的核心挑战或机遇）\n\n**未来 · ${pickedCards[2].card.name}**\n（40-60字，可能的走向与转变点）\n\n---\n\n### 💡 给你的建议\n（2-3条具体可操作的建议，列表形式）\n\n> 一句话总结（有力、温暖、接地气）`,
+        practical:`\n\n输出格式（简洁务实）：\n### 核心判断\n（1-2句，直接说真正的问题）\n\n### 三张牌说的事\n- 过去（${pickedCards[0].card.name}）：一句话\n- 现在（${pickedCards[1].card.name}）：一句话，点出核心矛盾\n- 未来（${pickedCards[2].card.name}）：一句话，说清选择的代价或机会\n\n### 优先行动\n（最重要的1-2件事，非常具体）\n\n### 需要警惕的\n（1条最容易踩的坑）`,
+        poetic:`\n\n输出格式：\n### ✨ 牌阵意象\n（一段有质感的文字，描述三张牌共同构成的内心图景）\n\n---\n\n### 三个时间的切片\n**过去的种子 · ${pickedCards[0].card.name}**\n（什么样的经历或模式种下了今天？）\n\n**当下的十字路口 · ${pickedCards[1].card.name}**\n（内心深处真实的状态，可能与表面不同）\n\n**未来的可能 · ${pickedCards[2].card.name}**\n（一种可能性，如果你愿意的话）\n\n---\n\n### 一个值得思考的问题\n（帮助深度自我反思的问题）\n\n> （有意境又落地的结尾）`
+    }[tone]||'';
+    return `${qLine}\n\n三张牌（过去-现在-未来）：\n${cards}${fmt}`;
+}
+
+function fSysPmt(tone) {
+    return sysPmt(tone)+'\n\n以下是已完成的塔罗解读的追问环节。来访者可能问更深入的问题或寻求具体建议。保持解读视角，给出有针对性的回答（100-200字，不重复已说过的内容）。';
+}
+
+async function startReading() {
+    const token=localStorage.getItem('deepseek_token');
+    if (!token) { $('settings-modal').classList.add('open'); return; }
+    const q=$('user-q').value.trim();
+    convHist=[];
+
+    // Build card strip
+    const row=$('r-cards'); row.innerHTML='';
+    pickedCards.forEach(p=>{
+        const item=document.createElement('div'); item.className='r-card-item';
+        const img=document.createElement('div');
+        img.className='r-card-img'+(p.reversed?' rev':'');
+        img.style.backgroundImage=`url('${p.card.img}')`;
+        const pos=document.createElement('div'); pos.className='r-card-pos'; pos.textContent=p.position;
+        const name=document.createElement('div'); name.className='r-card-name'; name.textContent=p.card.name+(p.reversed?' (逆)':'');
+        item.append(img,pos,name); row.appendChild(item);
+    });
+
+    const qtag=$('r-question-tag');
+    if (q) { qtag.textContent=`「${q}」`; qtag.style.display='block'; }
+    else qtag.style.display='none';
+
+    const content=$('r-content');
+    content.innerHTML='<div style="color:var(--text-dim);text-align:center;padding:24px 0;font-size:.82rem;letter-spacing:1px">神谕连接中…</div>';
+    $('reading-modal').classList.add('open');
+    $('followup').style.display='none';
+    $('chat-log').innerHTML='';
+    $('r-note').textContent='';
+
+    const spt=sysPmt(selTone), umsg=buildPmt(q,selTone);
+    convHist.push({role:'user',content:umsg});
+
+    try {
+        const full=await stream(token,spt,convHist,content);
+        convHist.push({role:'assistant',content:full});
+        $('followup').style.display='block';
+        $('r-note').textContent='解读完成 · 可在下方继续追问';
+    } catch(e) {
+        content.innerHTML+=`<p style="color:#d06060;margin-top:12px;font-size:.85rem">连接中断：${e.message}</p>`;
+    }
+}
+
+async function stream(token,sys,msgs,el) {
+    const res=await fetch('https://api.deepseek.com/chat/completions',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},
+        body:JSON.stringify({
+            model:'deepseek-chat',
+            messages:[{role:'system',content:sys},...msgs],
+            stream:true, temperature:.72, presence_penalty:.15, max_tokens:1500
+        })
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    const rd=res.body.getReader(), dc=new TextDecoder();
+    let full=''; el.innerHTML='';
+    while(true){
+        const {done,value}=await rd.read(); if(done)break;
+        for(const line of dc.decode(value,{stream:true}).split('\n')){
+            if(!line.startsWith('data: '))continue;
+            const js=line.slice(6); if(js==='[DONE]')break;
+            try{ const j=JSON.parse(js),d=j.choices?.[0]?.delta?.content||'';
+                if(d){full+=d;el.innerHTML=window.marked?window.marked.parse(full):full;} }catch{}
+        }
+    }
+    return full;
+}
+
+// Follow-up
+async function sendFU() {
+    const token=localStorage.getItem('deepseek_token');
+    const inp=$('fu-input'); const q=inp.value.trim();
+    if(!q||!token)return; inp.value='';
+    const log=$('chat-log');
+    const ub=document.createElement('div'); ub.className='chat-u'; ub.textContent=q; log.appendChild(ub);
+    const ab=document.createElement('div'); ab.className='chat-a'; ab.innerHTML='<span style="color:var(--text-dim)">思考中…</span>'; log.appendChild(ab);
+    log.scrollTop=log.scrollHeight;
+    convHist.push({role:'user',content:q});
+    try{
+        const full=await stream(token,fSysPmt(selTone),convHist,ab);
+        convHist.push({role:'assistant',content:full});
+    }catch(e){ ab.innerHTML=`<span style="color:#d06060">失败：${e.message}</span>`; }
+    log.scrollTop=log.scrollHeight;
+}
+$('fu-send').addEventListener('click',sendFU);
+$('fu-input').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendFU();} });
+$('r-close').addEventListener('click',()=>{
+    $('reading-modal').classList.remove('open');
+    setStatus('解读完成 · 再次握拳可重新解读');
+});
+
+// ════════════════════════════════════════
+//  SETTINGS
+// ════════════════════════════════════════
+$('settings-btn').addEventListener('click',()=>{ $('key-input').value=localStorage.getItem('deepseek_token')||''; $('settings-modal').classList.add('open'); });
+$('key-close').addEventListener('click',()=>$('settings-modal').classList.remove('open'));
+$('key-save').addEventListener('click',()=>{
+    const v=$('key-input').value.trim();
+    localStorage.setItem('deepseek_token',v);
+    $('settings-modal').classList.remove('open');
+    if(currentState===STATE.INTERPRETING) setStatus(v?'握拳 1 秒 → 开启命运解读':'配置 API Key 后可获取 AI 解读（右上角 ⚙）');
+});
+document.querySelectorAll('.backdrop').forEach(b=>{ b.addEventListener('click',e=>{ if(e.target===b) b.classList.remove('open'); }); });
+
+// ════════════════════════════════════════
+//  CAMERA
+// ════════════════════════════════════════
+async function initCamera() {
+    try{
+        const vid=$('webcam');
+        const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.7,minTrackingConfidence:.7});
+        hands.onResults(r=>{ if(r.multiHandLandmarks?.length) handleGesture(r.multiHandLandmarks[0]); });
+        const cam=new Camera(vid,{onFrame:async()=>await hands.send({image:vid}),width:320,height:240});
+        await cam.start();
+        cameraReady=true; cameraError=false; updateIdle();
+    }catch(e){
+        console.warn('Camera fallback',e);
+        cameraReady=false; cameraError=true; updateIdle();
+    }
+}
+
+// ════════════════════════════════════════
+//  START
+// ════════════════════════════════════════
+function startGame() {
+    if(!assetsReady){updateIdle();return;}
+    $('start-btn').style.display='none';
+    setStatus('命运之轮转动…');
+    currentDeck=[...FULL_DECK].sort(()=>Math.random()-.5);
+    pickedCards=[];
+    currentState=STATE.INTRO;
+    targetIndex=Math.floor(currentDeck.length/2);
+    currentIndex=currentDeck.length+5;
+    renderDeck();
+}
+$('start-btn').addEventListener('click',startGame);
+
+// ════════════════════════════════════════
+//  BOOT
+// ════════════════════════════════════════
+preloadAssets();
+initCamera();
+initBackground();
+
+window.addEventListener('keydown',e=>{
+    if(currentState===STATE.PICKING){
+        if(e.key==='ArrowLeft') velocity-=.12;
+        if(e.key==='ArrowRight') velocity+=.12;
+        if(e.key===' '||e.key==='ArrowUp'){e.preventDefault();lockedIdx=Math.round(currentIndex);selectCard();}
+    }
+    if(currentState===STATE.INTERPRETING&&e.key==='Enter') showQModal();
+});
+</script>
+</body>
+</html>
